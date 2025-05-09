@@ -5,30 +5,28 @@ import cv2
 from ultralytics import YOLO
 import google.generativeai as genai
 import PIL.Image
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all domains
+CORS(app)
 
-# Define folders
 UPLOAD_FOLDER = "static/upload/"
 PREDICT_FOLDER = "static/predict/"
 ROI_FOLDER = "static/roi/"
 
-# Ensure directories exist
 for folder in [UPLOAD_FOLDER, PREDICT_FOLDER, ROI_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# Load YOLO model
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "best.pt")  # Ensure the correct model path
+MODEL_PATH = os.path.join(BASE_DIR, "best.pt")
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
 
 model = YOLO(MODEL_PATH)
 
-# Configure Gemini API
-genai.configure(api_key="AIzaSyAPF-G0aBiJRshWF_9nxgf5HrAHLu-ewZU")  # Replace with your actual API key
-gemini_model = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')  # Use the correct model name
+genai.configure(api_key=os.getenv("API_KEY"))
+gemini_model = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')
 
 @app.route("/", methods=["GET"])
 def index():
@@ -45,27 +43,25 @@ def upload():
     file.save(img_path)
 
     try:
-        # Run YOLO model
         results = model(img_path, conf=0.25, save=True, save_txt=True)
         if not results:
             return jsonify({"error": "No detections from YOLO model"}), 500
 
-        output_dir = results[0].save_dir  # ✅ Get YOLO output directory
+        output_dir = results[0].save_dir
         print(f"YOLO results saved at: {output_dir}")
 
-        # File paths
         pred_img_path = os.path.join(output_dir, filename)
         label_path = os.path.join(output_dir, "labels", filename.replace('.jpg', '.txt'))
         
         detected_objects = []
-        unique_plates = set()  # ✅ Track unique detections
+        unique_plates = set()
 
         if os.path.exists(label_path):
             image = cv2.imread(pred_img_path)
             if image is None:
                 return jsonify({"error": "Failed to load processed image"}), 500
 
-            h, w, _ = image.shape  # Get image dimensions
+            h, w, _ = image.shape
 
             with open(label_path, "r") as f:
                 lines = f.readlines()
@@ -73,23 +69,19 @@ def upload():
             for line in lines:
                 class_id, x_center, y_center, width, height = map(float, line.split())
 
-                # Convert YOLO format to pixel values
                 xmin = int((x_center - width / 2) * w)
                 ymin = int((y_center - height / 2) * h)
                 xmax = int((x_center + width / 2) * w)
                 ymax = int((y_center + height / 2) * h)
 
-                # Crop the detected license plate
                 cropped_plate = image[ymin:ymax, xmin:xmax]
                 cropped_filename = f"plate_{filename}"
                 cropped_path = os.path.join(ROI_FOLDER, cropped_filename)
 
-                # Ensure uniqueness before saving
                 if cropped_filename not in unique_plates:
                     unique_plates.add(cropped_filename)
                     cv2.imwrite(cropped_path, cropped_plate)
 
-                    # Preprocess the cropped plate for Gemini API
                     gray = cv2.cvtColor(cropped_plate, cv2.COLOR_BGR2GRAY)
                     resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
                     filtered = cv2.bilateralFilter(resized, 11, 17, 17)
@@ -108,7 +100,6 @@ def upload():
                         "extracted_text": response.text
                     })
 
-        # Move processed image to static/predict
         processed_filename = f"pred_{filename}"
         processed_path = os.path.join(PREDICT_FOLDER, processed_filename)
         if os.path.exists(pred_img_path):
@@ -125,7 +116,6 @@ def upload():
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
 
-# Routes to serve images
 @app.route('/uploads/<filename>')
 def serve_uploads(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
